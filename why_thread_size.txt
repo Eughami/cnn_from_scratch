@@ -1,0 +1,20 @@
+Some good reasons to have a small block size and a power of 2: 32,64..etc
+Choosing a small block size has several advantages in CUDA programming, especially in contexts like image processing or convolutional operations:
+
+1. Resource Utilization:
+Shared Memory: Smaller block sizes often lead to more available shared memory per block, allowing for more efficient utilization of shared memory resources.
+
+2. Warp Efficiency:
+Warps: NVIDIA GPUs execute threads in groups called warps. Having a block size that divides evenly into warps (32 threads per warp) can lead to better warp efficiency. With 8x8x1, each block has exactly 64 threads, which means it can fit into 2 warps without wasting threads.
+
+3. Thread Divergence:
+Reduced Thread Divergence: Smaller block sizes can reduce the likelihood of thread divergence. With smaller block sizes, threads are more likely to execute similar instructions, minimizing divergence and improving overall performance.
+
+4. Flexibility:
+Flexibility Across Problem Sizes: Smaller block sizes might perform well across various problem sizes. They can often be adjusted to different dimensions without losing much efficiency.
+
+5. Memory Coalescing:
+Memory Access: Smaller block sizes can facilitate better memory access patterns, aiding in achieving memory coalescing and reducing memory latency.
+
+6. Responsiveness:
+Resource Sharing and Responsiveness: Smaller block sizes allow for better resource sharing and can improve the responsiveness of the GPU, especially in scenarios where multiple processes are running concurrently.

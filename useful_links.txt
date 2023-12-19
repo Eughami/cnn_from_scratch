@@ -1,0 +1,20 @@
+CUDA Crash Course 
+https://www.youtube.com/watch?v=OlLquh9Lnbc
+
+CNN Architecture
+https://www.youtube.com/watch?v=VF4BDE7uqY0
+
+Intro to CUDA (Grid, Block, thread explaination)
+https://www.youtube.com/watch?v=4APkMJdiudU&t=1s
+
+Cuda in python
+https://thedatafrog.com/en/articles/cuda-kernel-python
+
+Cuda 1D, 2D and 3D
+https://wandb.ai/ayush-thakur/dl-question-bank/reports/Intuitive-understanding-of-1D-2D-and-3D-convolutions-in-convolutional-neural-networks---VmlldzoxOTk2MDA
+
+CNN in python from scratch
+https://www.pycodemates.com/2023/07/build-a-cnn-from-scratch-using-python.html
+
+Improve CNN accuracy
+https://machinelearningmastery.com/how-to-develop-a-cnn-from-scratch-for-cifar-10-photo-classification/

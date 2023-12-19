@@ -1,0 +1,21 @@
+The function
+this function is called for each thread inside the array of blocks
+each thread is responsible for a single output node computation for all filters.
+coordinates are defined as the following:
+x: image number
+y: y coordinate of the output node
+z: x coordinate of the output node
+
+output array: x,y,z same as above, last param is the number oh channels
+
+Dimensions calculation:
+GRID
+I tried some different combinations such as using z as filter index (see main.cu) and many others but ended up with this.
+given the input array numbers and dimensions we make sure of the following:
+
+x: covers the number of image
+y: covers the height of the image
+z: covers the widh of the image
+
+THREAD
+8x8x1 because smaller block size has several benefits such as efficient Shared Memory usage, wrap Efficiency ..etc

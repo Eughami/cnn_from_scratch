@@ -1,0 +1,12 @@
+----------------------------data shape-------------------------------
+shape for tf is (numofitems, height, width, channels) but for np it's (numberofitems, channels, height, width) is that correct ?
+ChatGPT
+Yes, you're correct in distinguishing the default axis order conventions between TensorFlow (tf) and NumPy (np) for handling the shape of multi-dimensional arrays.
+
+In TensorFlow:
+
+The default convention for images or tensors is (num_samples, height, width, channels). This convention is often referred to as "NHWC" format, where N represents the number of samples (or batch size), H stands for height, W stands for width, and C represents channels.
+In NumPy:
+
+The default convention for images or tensors is (num_samples, channels, height, width). This convention is often referred to as "NCHW" format, where N is the number of samples (or batch size), C represents channels, H stands for height, and W stands for width.
+Both conventions have their advantages, and the choice between them often depends on the framework being used or the specific computation requirements. However, it's important to be aware of these differences when working with arrays or tensors across these frameworks to ensure proper data handling and compatibility.
