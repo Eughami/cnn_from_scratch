@@ -228,40 +228,50 @@ def create_batches(data, labels, batch_size):
 
     return zip(data_batches, label_batches)
 
-def train_network(X, y, conv, pool, full, lr=0.01, epochs=200):
+def train_network(X, y, conv, pool, full, lr=0.01, epochs=20, batch_size=32):
     for epoch in range(epochs):
-        t = time.time()
         total_loss = 0.0
         correct_predictions = 0
 
-        for i in range(len(X)):
-            # Forward pass
-            conv_out = conv.forward(X[i])
-            pool_out = pool.forward(conv_out)
-            full_out = full.forward(pool_out)
-            loss = cross_entropy_loss(full_out.flatten(), y[i])
-            total_loss += loss
+        # Create batches of data and labels
+        batches = create_batches(X, y, batch_size)
 
-            # Converting to One-Hot encoding
-            one_hot_pred = np.zeros_like(full_out)
-            one_hot_pred[np.argmax(full_out)] = 1
-            one_hot_pred = one_hot_pred.flatten()
+        for batch_X, batch_y in batches:
+            batch_loss = 0.0
+            batch_correct = 0
 
-            num_pred = np.argmax(one_hot_pred)
-            num_y = np.argmax(y[i])
+            for i in range(len(batch_X)):
+                # Forward pass
+                conv_out = conv.forward(batch_X[i])
+                pool_out = pool.forward(conv_out)
+                full_out = full.forward(pool_out)
+                loss = cross_entropy_loss(full_out.flatten(), batch_y[i])
+                batch_loss += loss
 
-            if num_pred == num_y:
-                correct_predictions += 1
-            # Backward pass
-            gradient = cross_entropy_loss_gradient(y[i], full_out.flatten()).reshape((-1, 1))
-            full_back = full.backward(gradient, lr)
-            pool_back = pool.backward(full_back, lr)
-            conv_back = conv.backward(pool_back, lr)
+                # Converting to One-Hot encoding
+                one_hot_pred = np.zeros_like(full_out)
+                one_hot_pred[np.argmax(full_out)] = 1
+                one_hot_pred = one_hot_pred.flatten()
+
+                num_pred = np.argmax(one_hot_pred)
+                num_y = np.argmax(batch_y[i])
+
+                if num_pred == num_y:
+                    batch_correct += 1
+
+                # Backward pass
+                gradient = cross_entropy_loss_gradient(batch_y[i], full_out.flatten()).reshape((-1, 1))
+                full_back = full.backward(gradient, lr)
+                pool_back = pool.backward(full_back, lr)
+                conv_back = conv.backward(pool_back, lr)
+
+            total_loss += batch_loss / len(batch_X)
+            correct_predictions += batch_correct
 
         # Print epoch statistics
         average_loss = total_loss / len(X)
-        accuracy = correct_predictions / len(X_train) * 100.0
-        print(f"Epoch {epoch + 1}/{epochs} - Time: {time.time() - t} seconds - Loss: {average_loss:.4f} - Accuracy: {accuracy:.2f}%")
+        accuracy = correct_predictions / len(X) * 100.0
+        print(f"Epoch {epoch + 1}/{epochs} - Loss: {average_loss:.4f} - Accuracy: {accuracy:.2f}%")
 
 def predict(input_sample, conv, pool, full):
     # Forward pass through Convolution and pooling
