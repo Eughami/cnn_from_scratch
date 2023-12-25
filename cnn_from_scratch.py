@@ -1,5 +1,6 @@
 import numpy as np
 import tensorflow.keras as keras
+from scipy.signal import convolve2d
 from keras.utils import to_categorical
 from sklearn.metrics import accuracy_score
 import time 
@@ -61,14 +62,16 @@ class Convolution:
         self.output_shape = (num_filters, input_height - filter_size + 1, input_width - filter_size + 1)
         
         self.filters = np.random.randn(*self.filter_shape)
+        # self.filters = np.load("conv_filters.npy")
         self.biases = np.random.randn(*self.output_shape)
+        # self.biases = np.load("conv_biases.npy")
     
     def forward(self, input_data):
         self.input_data = input_data
         # Initialized the input value
         output = np.zeros(self.output_shape)
         for i in range(self.num_filters):
-            output[i] = manual_convolution(self.input_data, self.filters[i], mode="valid")
+            output[i] = convolve2d(self.input_data, self.filters[i], mode="valid")
         #Applying Relu Activtion function
         output = np.maximum(output, 0)
         return output 
@@ -80,10 +83,10 @@ class Convolution:
 
         for i in range(self.num_filters):
                 # Calculating the gradient of loss with respect to kernels
-                dL_dfilters[i] = manual_convolution(self.input_data, dL_dout[i],mode="valid")
+                dL_dfilters[i] = convolve2d(self.input_data, dL_dout[i],mode="valid")
 
                 # Calculating the gradient of loss with respect to inputs
-                dL_dinput += manual_convolution(dL_dout[i],self.filters[i], mode="full")
+                dL_dinput += convolve2d(dL_dout[i],self.filters[i], mode="full")
 
         # Updating the parameters with learning rate
         self.filters -= lr * dL_dfilters
@@ -155,22 +158,30 @@ class Fully_Connected:
         self.input_size = input_size # Size of the inputs coming
         self.output_size = output_size # Size of the output producing
         self.weights = np.random.randn(output_size, self.input_size)
+        # self.weights = np.load("weights.npy")
         self.biases = np.random.rand(output_size, 1)
+        # self.biases = np.load("biases.npy")
 
+    
     def softmax(self, z):
         # Shift the input values to avoid numerical instability
         shifted_z = z - np.max(z)
+        
+        # Exponentiate the shifted values
         exp_values = np.exp(shifted_z)
+        
+        # Calculate the sum of exponentiated values for normalization
         sum_exp_values = np.sum(exp_values, axis=0)
-        log_sum_exp = np.log(sum_exp_values)
-
-        # Compute the softmax probabilities
+        
+        # Calculate the softmax probabilities
         probabilities = exp_values / sum_exp_values
-
+        
         return probabilities
     
     def softmax_derivative(self, s):
-        return np.diagflat(s) - np.dot(s, s.T)
+        diag_softmax = np.diagflat(s)
+        outer_product = np.outer(s, s)
+        return diag_softmax - outer_product
     
     def forward(self, input_data):
         self.input_data = input_data
@@ -228,50 +239,40 @@ def create_batches(data, labels, batch_size):
 
     return zip(data_batches, label_batches)
 
-def train_network(X, y, conv, pool, full, lr=0.01, epochs=20, batch_size=32):
+def train_network(X, y, conv, pool, full, lr=0.001, epochs=20):
     for epoch in range(epochs):
+        t = time.time()
         total_loss = 0.0
         correct_predictions = 0
 
-        # Create batches of data and labels
-        batches = create_batches(X, y, batch_size)
+        for i in range(len(X)):
+            # Forward pass
+            conv_out = conv.forward(X[i])
+            pool_out = pool.forward(conv_out)
+            full_out = full.forward(pool_out)
+            loss = cross_entropy_loss(full_out.flatten(), y[i])
+            total_loss += loss
 
-        for batch_X, batch_y in batches:
-            batch_loss = 0.0
-            batch_correct = 0
+            # Converting to One-Hot encoding
+            one_hot_pred = np.zeros_like(full_out)
+            one_hot_pred[np.argmax(full_out)] = 1
+            one_hot_pred = one_hot_pred.flatten()
 
-            for i in range(len(batch_X)):
-                # Forward pass
-                conv_out = conv.forward(batch_X[i])
-                pool_out = pool.forward(conv_out)
-                full_out = full.forward(pool_out)
-                loss = cross_entropy_loss(full_out.flatten(), batch_y[i])
-                batch_loss += loss
+            num_pred = np.argmax(one_hot_pred)
+            num_y = np.argmax(y[i])
 
-                # Converting to One-Hot encoding
-                one_hot_pred = np.zeros_like(full_out)
-                one_hot_pred[np.argmax(full_out)] = 1
-                one_hot_pred = one_hot_pred.flatten()
-
-                num_pred = np.argmax(one_hot_pred)
-                num_y = np.argmax(batch_y[i])
-
-                if num_pred == num_y:
-                    batch_correct += 1
-
-                # Backward pass
-                gradient = cross_entropy_loss_gradient(batch_y[i], full_out.flatten()).reshape((-1, 1))
-                full_back = full.backward(gradient, lr)
-                pool_back = pool.backward(full_back, lr)
-                conv_back = conv.backward(pool_back, lr)
-
-            total_loss += batch_loss / len(batch_X)
-            correct_predictions += batch_correct
+            if num_pred == num_y:
+                correct_predictions += 1
+            # Backward pass
+            gradient = cross_entropy_loss_gradient(y[i], full_out.flatten()).reshape((-1, 1))
+            full_back = full.backward(gradient, lr)
+            pool_back = pool.backward(full_back, lr)
+            conv_back = conv.backward(pool_back, lr)
 
         # Print epoch statistics
         average_loss = total_loss / len(X)
         accuracy = correct_predictions / len(X) * 100.0
-        print(f"Epoch {epoch + 1}/{epochs} - Loss: {average_loss:.4f} - Accuracy: {accuracy:.2f}%")
+        print(f"Epoch {epoch + 1}/{epochs} - Time: {time.time() - t:.2f} seconds - Loss: {average_loss:.4f} - Accuracy: {accuracy:.2f}%")
 
 def predict(input_sample, conv, pool, full):
     # Forward pass through Convolution and pooling
@@ -294,16 +295,20 @@ y_test = train_labels[8000:10000]
 y_train = to_categorical(y_train)
 y_test = to_categorical(y_test)
 
-conv = Convolution(X_train[0].shape, 3, 1)
+conv = Convolution(X_train[0].shape, 3, 3)
 pool = MaxPool(2)
-full = Fully_Connected(169, 10)
+print(conv.filters)
+full = Fully_Connected(507, 10)
 
 st = time.time()
-train_network(X_train, y_train, conv, pool, full, lr=0.01, epochs=20)
+train_network(X_train, y_train, conv, pool, full)
 print("Time taken for training : ",time.time()-st , " seconds")
 
 predictions = []
-
+np.save("conv_filters.npy",conv.filters)
+np.save("conv_biases.npy",conv.biases)
+np.save("weights.npy",full.weights)
+np.save("biases.npy",full.biases)
 for data in X_test:
     pred = predict(data, conv, pool, full)
     one_hot_pred = np.zeros_like(pred)
@@ -316,4 +321,4 @@ true_labels = np.argmax(y_test, axis=1)
 
 # Calculate accuracy using sklearn's accuracy_score
 accuracy = accuracy_score(true_labels, predicted_labels)
-print("Accuracy score:", accuracy)
+print("Accuracy :", accuracy)
