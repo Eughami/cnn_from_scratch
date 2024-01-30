@@ -1,11 +1,11 @@
 import numpy as np
-import tensorflow.keras as keras
-from scipy.signal import convolve2d
+from keras import datasets
+# from scipy.signal import convolve2d
 from keras.utils import to_categorical
 from sklearn.metrics import accuracy_score
 import time 
-
 import numpy as np
+np.set_printoptions(precision=4, suppress=True, linewidth=np.inf,threshold=np.inf)
 
 def manual_convolution(input_array, kernel, mode='valid'):
     input_shape = input_array.shape
@@ -39,12 +39,13 @@ def manual_convolution(input_array, kernel, mode='valid'):
     # Perform the convolution
     for i in range(output_shape[0]):
         for j in range(output_shape[1]):
-            total = 0
-            for k in range(kernel_shape[0]):
-                for l in range(kernel_shape[1]):
-                    total += padded_input[i + k, j + l] * kernel[k, l]
+            output_array[i, j] = np.sum(np.multiply(padded_input[i:i+kernel_shape[0], j:j+kernel_shape[1]], kernel))
+            # total = 0
+            # for k in range(kernel_shape[0]):
+            #     for l in range(kernel_shape[1]):
+            #         total += padded_input[i + k, j + l] * kernel[k, l]
 
-            output_array[i, j] = total
+            # output_array[i, j] = total
 
     return output_array
 
@@ -71,22 +72,22 @@ class Convolution:
         # Initialized the input value
         output = np.zeros(self.output_shape)
         for i in range(self.num_filters):
-            output[i] = convolve2d(self.input_data, self.filters[i], mode="valid")
+            output[i] = manual_convolution(self.input_data, self.filters[i], mode="valid")
         #Applying Relu Activtion function
         output = np.maximum(output, 0)
         return output 
     
-    def backward(self, dL_dout, lr):
+    def backward(self, input, dL_dout, lr):
         # Create a random dL_dout array to accommodate output gradients
-        dL_dinput = np.zeros_like(self.input_data)
+        dL_dinput = np.zeros_like(input)
         dL_dfilters = np.zeros_like(self.filters)
-
+        
         for i in range(self.num_filters):
                 # Calculating the gradient of loss with respect to kernels
-                dL_dfilters[i] = convolve2d(self.input_data, dL_dout[i],mode="valid")
+                dL_dfilters[i] = manual_convolution(input, dL_dout[i],mode="valid")
 
                 # Calculating the gradient of loss with respect to inputs
-                dL_dinput += convolve2d(dL_dout[i],self.filters[i], mode="full")
+                dL_dinput += manual_convolution(dL_dout[i],self.filters[i], mode="full")
 
         # Updating the parameters with learning rate
         self.filters -= lr * dL_dfilters
@@ -239,7 +240,8 @@ def create_batches(data, labels, batch_size):
 
     return zip(data_batches, label_batches)
 
-def train_network(X, y, conv, pool, full, lr=0.001, epochs=20):
+
+def train_network(X, y, conv, pool, full, lr=0.01, epochs=5):
     for epoch in range(epochs):
         t = time.time()
         total_loss = 0.0
@@ -267,12 +269,16 @@ def train_network(X, y, conv, pool, full, lr=0.001, epochs=20):
             gradient = cross_entropy_loss_gradient(y[i], full_out.flatten()).reshape((-1, 1))
             full_back = full.backward(gradient, lr)
             pool_back = pool.backward(full_back, lr)
-            conv_back = conv.backward(pool_back, lr)
+            conv_back = conv.backward(X[i],pool_back, lr)
 
         # Print epoch statistics
         average_loss = total_loss / len(X)
+        print("total_loss",total_loss)
+        print("correct_predictions",correct_predictions)
+        print("len(X)",len(X))
         accuracy = correct_predictions / len(X) * 100.0
         print(f"Epoch {epoch + 1}/{epochs} - Time: {time.time() - t:.2f} seconds - Loss: {average_loss:.4f} - Accuracy: {accuracy:.2f}%")
+      
 
 def predict(input_sample, conv, pool, full):
     # Forward pass through Convolution and pooling
@@ -285,30 +291,30 @@ def predict(input_sample, conv, pool, full):
     return predictions
 
 # Load the Fashion MNIST dataset
-(train_images, train_labels), (test_images, test_labels) = keras.datasets.fashion_mnist.load_data()
-X_train = train_images[:8000] / 255.0
-y_train = train_labels[:8000]
+(train_images, train_labels), (test_images, test_labels) = datasets.mnist.load_data()
 
-X_test = train_images[8000:10000] / 255.0
-y_test = train_labels[8000:10000]
+X_train = train_images / 255.0
+y_train = train_labels
+
+X_test = test_images / 255.0
+y_test = test_labels
 
 y_train = to_categorical(y_train)
 y_test = to_categorical(y_test)
 
-conv = Convolution(X_train[0].shape, 3, 3)
+conv = Convolution(X_train[0].shape, 3, 1)
 pool = MaxPool(2)
-print(conv.filters)
-full = Fully_Connected(507, 10)
+full = Fully_Connected(169, 10)
 
 st = time.time()
 train_network(X_train, y_train, conv, pool, full)
 print("Time taken for training : ",time.time()-st , " seconds")
 
 predictions = []
-np.save("conv_filters.npy",conv.filters)
-np.save("conv_biases.npy",conv.biases)
-np.save("weights.npy",full.weights)
-np.save("biases.npy",full.biases)
+# np.save("conv_filters.npy",conv.filters)
+# np.save("conv_biases.npy",conv.biases)
+# np.save("weights.npy",full.weights)
+# np.save("biases.npy",full.biases)
 for data in X_test:
     pred = predict(data, conv, pool, full)
     one_hot_pred = np.zeros_like(pred)

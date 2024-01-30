@@ -1,4 +1,6 @@
 papers
 out
-*.pdf
+# *.pdf
 .env
+logs
+*.npy

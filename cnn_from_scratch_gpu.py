@@ -1,80 +1,220 @@
+import os 
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
+import sys
 import numpy as np
-from numba import cuda,prange
-from scipy.signal import correlate2d
-import tensorflow.keras as keras
+import keras
+from scipy.signal import convolve2d
 from keras.utils import to_categorical
 from sklearn.metrics import accuracy_score
 import time 
+from numba import cuda
+import numpy as np
+np.set_printoptions(precision=4, suppress=True, linewidth=np.inf,threshold=np.inf)
+
+def manual_convolution(input_array, kernel, mode='valid'):
+    input_shape = input_array.shape
+    kernel_shape = kernel.shape
+    
+    if mode == 'valid':
+        output_shape = (input_shape[0] - kernel_shape[0] + 1, input_shape[1] - kernel_shape[1] + 1)
+    elif mode == 'same':
+        output_shape = input_shape
+    elif mode == 'full':
+        output_shape = (input_shape[0] + kernel_shape[0] - 1, input_shape[1] + kernel_shape[1] - 1)
+    else:
+        raise ValueError("Invalid mode. Please use 'valid', 'same', or 'full'.")
+
+    output_array = np.zeros(output_shape)
+
+    # Pad the input array based on the mode
+    if mode == 'valid':
+        padded_input = input_array
+    elif mode == 'same':
+        pad_height = kernel_shape[0] // 2
+        pad_width = kernel_shape[1] // 2
+        padded_input = np.pad(input_array, ((pad_height, pad_height), (pad_width, pad_width)), mode='constant')
+    elif mode == 'full':
+        padded_input = np.pad(input_array, ((kernel_shape[0] - 1, kernel_shape[0] - 1),
+                                            (kernel_shape[1] - 1, kernel_shape[1] - 1)),
+                              mode='constant')
+    else:
+        raise ValueError("Invalid mode. Please use 'valid', 'same', or 'full'.")
+    
+    # Perform the convolution
+    for i in range(output_shape[0]):
+        for j in range(output_shape[1]):
+            output_array[i, j] = np.sum(np.multiply(padded_input[i:i+kernel_shape[0], j:j+kernel_shape[1]], kernel))
+            # total = 0
+            # for k in range(kernel_shape[0]):
+            #     for l in range(kernel_shape[1]):
+            #         total += padded_input[i + k, j + l] * kernel[k, l]
+
+            # output_array[i, j] = total
+
+    return output_array
+
+
+# Manual convolution using CUDA with @cuda.jit
+@cuda.jit
+def manual_convolution_3d_cuda(larger_arrays, smaller_arrays, output_arrays):
+    # larger and small arrays should have the same depth
+    batch_size, larger_size_depth, larger_size_height, larger_size_width = larger_arrays.shape
+    channels, smaller_size_depth, smaller_size_height, smaller_size_width = smaller_arrays.shape
+
+    output_height = larger_size_height - smaller_size_height + 1
+    output_width = larger_size_width - smaller_size_width + 1
+    x, y, z = cuda.grid(3)
+
+    if x < batch_size and y < output_height and z < output_width:
+        for k in range(channels):
+            value = 0.0
+            for l in range(smaller_size_depth):
+                for j in range(smaller_size_height):
+                    for i in range(smaller_size_width):
+                        value += larger_arrays[x, l, y + i, z + j] * smaller_arrays[k, l, i, j]
+            output_arrays[x, k, y, z] = value
 
 @cuda.jit
-def corr2d_cuda(input_data, filters, output, num_filters):
-    for i in prange(num_filters):
-        output[i, :, :] = correlate2d(input_data, filters[i], mode="valid")
-
-@cuda.jit
-def max_pool_cuda(input_data, output, pool_size):
-    num_channels, height, width = input_data.shape
-    output_height = height // pool_size
-    output_width = width // pool_size
-
-    output.shape = (num_channels, output_height, output_width)
-    for c in prange(num_channels):
-        for i in prange(output_height):
-            for j in prange(output_width):
-                start_i = i * pool_size
-                start_j = j * pool_size
-                end_i = start_i + pool_size
-                end_j = start_j + pool_size
-
-                patch = input_data[c, start_i:end_i, start_j:end_j]
-                output[c, i, j] = np.max(patch)
+def manual_maxpooling_cuda(input_arrays, output_arrays, window_size, stride):
+    total_size, channels, _, _ = input_arrays.shape
+    x, y, z = cuda.grid(3)
+    
+    if x < total_size and y < output_arrays.shape[2] and z < output_arrays.shape[3]:
+        for k in range(channels):
+            value = 0.0
+            for i in range(window_size):
+                for j in range(window_size):
+                    value = max(value, input_arrays[x // channels, k, (stride*y + i), (stride*z + j)])
+            output_arrays[x // channels, k, y, z] = value
 
 class Convolution:
-    # ... (same as the original Convolution class but remove the forward and backward functions)
-     def __init__(self, input_shape, filter_size, num_filters):
+    
+    def __init__(self, input_shape, filter_size, num_filters):
         input_height, input_width = input_shape
         self.num_filters = num_filters
         self.input_shape = input_shape
         
         # Size of outputs and filters
-        
         self.filter_shape = (num_filters, filter_size, filter_size) # (3,3)
         self.output_shape = (num_filters, input_height - filter_size + 1, input_width - filter_size + 1)
         
         self.filters = np.random.randn(*self.filter_shape)
+        # self.filters = np.load("conv_filters.npy")
         self.biases = np.random.randn(*self.output_shape)
+        # self.biases = np.load("conv_biases.npy")
+    
+    def backward(self, input, dL_dout, lr):
+        dL_dinput = np.zeros_like(input)
+        dL_dfilters = np.zeros_like(self.filters)
+        
+        for i in range(self.num_filters):
+                # Calculating the gradient of loss with respect to kernels
+                dL_dfilters[i] = manual_convolution(input, dL_dout[i],mode="valid")
 
+                # Calculating the gradient of loss with respect to inputs
+                dL_dinput += manual_convolution(dL_dout[i],self.filters[i], mode="full")
+
+        # Updating the parameters with learning rate
+        self.filters -= lr * dL_dfilters
+        self.biases -= lr * dL_dout
+
+        # returning the gradient of inputs
+        return dL_dinput
+    
 class MaxPool:
-    # ... (same as the original MaxPool class but remove the forward and backward functions)
+
     def __init__(self, pool_size):
         self.pool_size = pool_size
 
-@cuda.jit
-def softmax(z):
-    # Shift the input values to avoid numerical instability
-    shifted_z = z - np.max(z)
-    exp_values = np.exp(shifted_z)
-    sum_exp_values = np.sum(exp_values, axis=0)
-    log_sum_exp = np.log(sum_exp_values)
+    def backward(self, input_data, dL_dout, lr):
+        self.num_channels, self.input_height, self.input_width = input_data.shape
+        self.output_height = self.input_height // self.pool_size
+        self.output_width = self.input_width // self.pool_size
 
-    probabilities = exp_values / sum_exp_values
+        # Determining the output shape
+        self.output = np.zeros((self.num_channels, self.output_height, self.output_width))
 
-    return probabilities
+        dL_dinput = np.zeros_like(input_data)
 
-@cuda.jit
-def softmax_derivative(s):
-    return np.diagflat(s) - np.dot(s, s.T)
+        for c in range(self.num_channels):
+            for i in range(self.output_height):
+                for j in range(self.output_width):
+                    start_i = i * self.pool_size
+                    start_j = j * self.pool_size
 
+                    end_i = start_i + self.pool_size
+                    end_j = start_j + self.pool_size
+                    patch = input_data[c, start_i:end_i, start_j:end_j]
+
+                    mask = patch == np.max(patch)
+
+                    dL_dinput[c,start_i:end_i, start_j:end_j] = dL_dout[c, i, j] * mask
+
+        return dL_dinput
+    
 class Fully_Connected:
-    # ... (same as the original Fully_Connected class but remove the forward and backward functions)
+
     def __init__(self, input_size, output_size):
         self.input_size = input_size # Size of the inputs coming
         self.output_size = output_size # Size of the output producing
         self.weights = np.random.randn(output_size, self.input_size)
+        # self.weights = np.load("weights.npy")
         self.biases = np.random.rand(output_size, 1)
+        # self.biases = np.load("biases.npy")
 
-@cuda.jit
-def cross_entropy_loss_cuda(predictions, targets):
+    
+    def softmax(self, z):
+        # Shift the input values to avoid numerical instability
+        shifted_z = z - np.max(z)
+        
+        # Exponentiate the shifted values
+        exp_values = np.exp(shifted_z)
+        
+        # Calculate the sum of exponentiated values for normalization
+        sum_exp_values = np.sum(exp_values, axis=0)
+        
+        # Calculate the softmax probabilities
+        probabilities = exp_values / sum_exp_values
+        
+        return probabilities
+    
+    def softmax_derivative(self, s):
+        diag_softmax = np.diagflat(s)
+        outer_product = np.outer(s, s)
+        return diag_softmax - outer_product
+    
+    def forward(self, input_data):
+        self.input_data = input_data
+        # Flattening the inputs from the previous layer into a vector
+        flattened_input = input_data.flatten().reshape(1, -1)
+        self.z = np.dot(self.weights, flattened_input.T) + self.biases
+
+        # Applying Softmax
+        self.output = self.softmax(self.z)
+        return self.output
+    
+    def backward(self, dL_dout, lr):
+        # Calculate the gradient of the loss with respect to the pre-activation (z)
+        dL_dy = np.dot(self.softmax_derivative(self.output), dL_dout)
+        # Calculate the gradient of the loss with respect to the weights (dw)
+        dL_dw = np.dot(dL_dy, self.input_data.flatten().reshape(1, -1))
+
+        # Calculate the gradient of the loss with respect to the biases (db)
+        dL_db = dL_dy
+
+        # Calculate the gradient of the loss with respect to the input data (dL_dinput)
+        dL_dinput = np.dot(self.weights.T, dL_dy)
+        dL_dinput = dL_dinput.reshape(self.input_data.shape)
+
+        # Update the weights and biases based on the learning rate and gradients
+        self.weights -= lr * dL_dw
+        self.biases -= lr * dL_db
+
+        # Return the gradient of the loss with respect to the input data
+        return dL_dinput
+    
+def cross_entropy_loss(predictions, targets):
+
     num_samples = 10
 
     # Avoid numerical instability by adding a small epsilon value
@@ -83,108 +223,196 @@ def cross_entropy_loss_cuda(predictions, targets):
     loss = -np.sum(targets * np.log(predictions)) / num_samples
     return loss
 
-@cuda.jit
-def cross_entropy_loss_gradient_cuda(actual_labels, predicted_probs):
+def cross_entropy_loss_gradient(actual_labels, predicted_probs):
     num_samples = actual_labels.shape[0]
     gradient = -actual_labels / (predicted_probs + 1e-7) / num_samples
 
     return gradient
+    
+def create_batches(data, labels, batch_size):
+    num_samples = len(data)
+    num_batches = num_samples // batch_size
 
-@cuda.jit
-def train_network_cuda(X, y, conv, pool, full, lr=0.01, epochs=200):
-    for epoch in prange(epochs):
-        total_loss = 0.0
-        correct_predictions = 0
+    # Create batches of data and labels
+    data_batches = np.array_split(data[:num_batches * batch_size], num_batches)
+    label_batches = np.array_split(labels[:num_batches * batch_size], num_batches)
 
-        for i in prange(len(X)):
-            # Forward pass
-            input_data = X[i].astype(np.float32)
-            conv_filters = conv.filters.astype(np.float32)
-            corr2d_cuda[1, X_train[0].shape[0], X_train[0].shape[0], X_train[0].shape[0]](input_data, conv_filters, conv.output, conv.num_filters)
-            pool_size = pool.pool_size
-            max_pool_cuda[1, X_train[0].shape[0], X_train[0].shape[0], X_train[0].shape[0], 1, 1](conv.output, pool.output, pool_size)
-            full_input = pool.output.reshape(-1, 1)
-            full_output = full.output.astype(np.float32)
-            full_weights = full.weights.astype(np.float32)
-            full_biases = full.biases.astype(np.float32)
+    return zip(data_batches, label_batches), num_batches
 
-            loss = cross_entropy_loss_cuda[1, full_output.shape[0], full_output.shape[1]](full_output, y[i].astype(np.float32))
-            total_loss += loss
+def launchKernel(input,filter):
+    # Input/filter  should be in the format (N, C, H, W)
+    # Process each array within the main array
+    processed_input_array = [array[np.newaxis, :, :] if len(array.shape) == 2 else array for array in input]
+    processed_filter_array = [array[np.newaxis, :, :] if len(array.shape) == 2 else array for array in filter]
+    # Convert to numpy arrays
+    processed_input_array = np.array(processed_input_array)
+    processed_filter_array = np.array(processed_filter_array)
+    
+    num_larger_arrays, _, input_height, input_width= processed_input_array.shape
+    num_smaller_arrays, _, filter_height, filter_width = processed_filter_array.shape
 
-            correct_predictions_temp = np.argmax(full_output, axis=-1)
-            correct_predictions += np.sum(correct_predictions_temp == y[i])
+    output_y =input_height - filter_height + 1
+    output_x = input_width - filter_width + 1
+    
+    threadsperblock = (8, 8, 8)
+    blockspergrid_x = (num_larger_arrays + threadsperblock[0] - 1) // threadsperblock[0]
+    blockspergrid_y = (output_y + threadsperblock[1] - 1) // threadsperblock[1]
+    blockspergrid_z = (output_x + threadsperblock[2] - 1) // threadsperblock[2]
+    blockspergrid = (blockspergrid_x, blockspergrid_y, blockspergrid_z)
 
-            # Backward pass
-            gradients = cross_entropy_loss_gradient_cuda[1, X_train[0].shape[0], full_output.shape[1]](y[i].astype(np.float32), full_output)
-            gradients = gradients.reshape((-1, 1))
-            full_back = np.zeros_like(full.output)
-            full_back[:, np.newaxis, :] = gradients
+    # Transfer arrays to GPU memory
+    larger_arrays_gpu = cuda.to_device(processed_input_array)
+    smaller_arrays_gpu = cuda.to_device(processed_filter_array)
 
-            full_weights -= lr * np.sum(full_back * full.output, axis=(0, 1, 2))
-            full_biases -= lr * np.sum(full_back, axis=(0, 1, 2))
+    # Create output arrays on GPU
+    output_arrays_gpu = cuda.device_array((num_larger_arrays, num_smaller_arrays, output_y, output_x))
+    # Perform convolution on GPU for each combination of arrays
+    manual_convolution_3d_cuda[blockspergrid, threadsperblock](larger_arrays_gpu, smaller_arrays_gpu, output_arrays_gpu)
 
-        # Print epoch statistics
-        average_loss = total_loss / len(X)
-        accuracy = correct_predictions / len(X_train) * 100.0
-        print(f"Epoch {epoch + 1}/{epochs} - Loss: {average_loss:.4f} - Accuracy: {accuracy:.2f}%")
+    # Transfer results from GPU memory to CPU for printing
+    results_gpu = output_arrays_gpu.copy_to_host()
+    # Applying Relu Activtion function
+    results_gpu = np.maximum(results_gpu, 0)
+    conv_out = results_gpu
 
-@cuda.jit
-def predict_cuda(input_sample, conv, pool, full):
-    input_data = input_sample.astype(np.float32)
-    conv_filters = conv.filters.astype(np.float32)
-    corr2d_cuda[1, input_data.shape[0], input_data.shape[0], conv.filters.shape[0]](input_data, conv_filters, conv.output, conv.num_filters)
-    pool_size = pool.pool_size
-    max_pool_cuda[1, input_data.shape[0], input_data.shape[0], input_data.shape[0], 1, 1](conv.output, pool.output, pool_size)
-    flattened_output = pool.output.reshape(-1, 1)
-    predictions = full.forward(flattened_output)
-    return predictions
+    # Maxpooling
+    window_size = 2
+    stride = 2
+    output_y = output_y//window_size
+    output_x = output_x//window_size
+    output_arrays_gpu = cuda.device_array((num_larger_arrays, num_smaller_arrays, output_y, output_x))
+    blockspergrid_y = blockspergrid_y//window_size
+    blockspergrid_z = blockspergrid_z//window_size
+    blockspergrid = (blockspergrid_x, blockspergrid_y, blockspergrid_z)
+    
+    results_gpu = cuda.to_device(results_gpu)
+    manual_maxpooling_cuda[blockspergrid, threadsperblock](results_gpu, output_arrays_gpu, window_size, stride)
+    pool_out = output_arrays_gpu.copy_to_host()
 
-def train_network(X, y, lr=0.01, epochs=20):
-    cuda_X = np.ascontiguousarray(X, dtype=np.float32)
-    cuda_y = np.ascontiguousarray(y, dtype=np.float32)
-
-    conv_instance = Convolution(X[0].shape, 3, 1)
-    pool_instance = MaxPool(2)
-    full_instance = Fully_Connected(169, 10)
-
-    print(conv_instance.filters)
-    cuda_conv = cuda.device_array(np.random.randn(*conv_instance.filter_shape).shape, np.float32)
-    cuda_pool = cuda.device_array(pool_instance.output_shape, np.float32)
-    cuda_full = cuda.device_array(full_instance.output_shape, np.float32)
-
-    train_network_cuda[1, len(X), 1](cuda_X, cuda_y, conv_instance, pool_instance, full_instance, lr, epochs)
-    conv = cuda_conv.copy_to_host()
-    pool = cuda_pool.copy_to_host()
-    full = cuda_full.copy_to_host()
-
-    return conv, pool, full
+    return conv_out, pool_out
 
 # Load the Fashion MNIST dataset
 (train_images, train_labels), (test_images, test_labels) = keras.datasets.fashion_mnist.load_data()
-X_train = train_images[:8000] / 255.0
-y_train = train_labels[:8000]
 
-X_test = train_images[8000:10000] / 255.0
-y_test = train_labels[8000:10000]
+X_train = train_images / 255.0
+y_train = train_labels
+
+X_test = test_images / 255.0
+y_test = test_labels
 
 y_train = to_categorical(y_train)
 y_test = to_categorical(y_test)
 
-X_train = np.ascontiguousarray(X_train, dtype=np.float32)
-y_train = np.ascontiguousarray(y_train, dtype=np.float32)
+epochs=1
+lr=0.01
+batch_size=128
+
+conv = Convolution(X_train[0].shape, 3, 1)
+pool = MaxPool(2)
+full = Fully_Connected(169, 10)
 
 st = time.time()
-conv,pool,full =  train_network(X_train, y_train, lr=0.01, epochs=20)
+def train_network():
+    num_samples = len(X_train)
+    
+    for epoch in range(epochs):
+        t = time.time()
+        total_loss = 0.0
+        correct_predictions = 0
+        print("filters\n",conv.filters)
+
+        # Create batches
+        batches, num_batches = create_batches(X_train, y_train, batch_size)
+
+        for batch_idx, (X_batch, y_batch) in enumerate(batches):
+
+            full_conv_output, full_pool_out = launchKernel(X_batch, conv.filters)
+            num_images = full_conv_output.shape[0]
+
+            for i in range(num_images):
+                full_out = full.forward(full_pool_out[i])
+                loss = cross_entropy_loss(full_out.flatten(), y_batch[i])
+                total_loss += loss
+
+                # Converting to One-Hot encoding
+                one_hot_pred = np.zeros_like(full_out)
+                one_hot_pred[np.argmax(full_out)] = 1
+                one_hot_pred = one_hot_pred.flatten()
+
+                num_pred = np.argmax(one_hot_pred)
+                num_y = np.argmax(y_batch[i])
+
+                if num_pred == num_y:
+                    correct_predictions += 1
+
+                # Backward pass
+                gradient = cross_entropy_loss_gradient(y_batch[i], full_out.flatten()).reshape((-1, 1))
+                full_back = full.backward(gradient, lr)
+                pool_back = pool.backward(full_conv_output[i], full_back, lr)
+                conv_back = conv.backward(X_batch[i], pool_back, lr)
+            
+        average_loss = total_loss / num_samples
+        accuracy = correct_predictions / num_samples * 100.0
+        print(f"Epoch {epoch + 1}/{epochs} - Time: {time.time() - t:.2f} seconds - Loss: {average_loss:.4f} - Accuracy: {accuracy:.2f}%")
+
+# def train_network():
+#     for epoch in range(epochs):
+#         t = time.time()
+#         total_loss = 0.0
+#         correct_predictions = 0
+#         print("filters\n",conv.filters)
+#         # Forward pass
+#         full_conv_output, full_pool_out = launchKernel(X_train,conv.filters)
+#         num_images = full_conv_output.shape[0]
+#         for i in range(num_images):
+#             full_out = full.forward(full_pool_out[i])
+#             loss = cross_entropy_loss(full_out.flatten(), y_train[i])
+#             total_loss += loss
+
+#             # Converting to One-Hot encoding
+#             one_hot_pred = np.zeros_like(full_out)
+#             one_hot_pred[np.argmax(full_out)] = 1
+#             one_hot_pred = one_hot_pred.flatten()
+
+#             num_pred = np.argmax(one_hot_pred)
+#             num_y = np.argmax(y_train[i])
+
+#             if num_pred == num_y:
+#                 correct_predictions += 1
+#             # Backward pass
+#             gradient = cross_entropy_loss_gradient(y_train[i], full_out.flatten()).reshape((-1, 1))
+#             full_back = full.backward(gradient, lr)
+#             pool_back = pool.backward(full_conv_output[i],full_back, lr)
+#             conv_back = conv.backward(X_train[i],pool_back, lr)
+
+#         average_loss = total_loss / num_images
+#         print("total_loss",total_loss)
+#         print("correct_predictions",correct_predictions)
+#         accuracy = correct_predictions / num_images * 100.0
+#         print(f"Epoch {epoch + 1}/{epochs} - Time: {time.time() - t:.2f} seconds - Loss: {average_loss:.4f} - Accuracy: {accuracy:.2f}%")
+
+train_network()
+
 print("Time taken for training : ",time.time()-st , " seconds")
-
+st = time.time()
 predictions = []
+# np.save("conv_filters.npy",conv.filters)
+# np.save("conv_biases.npy",conv.biases)
+# np.save("weights.npy",full.weights)
+# np.save("biases.npy",full.biases)
 
-for data in X_test:
-    input_sample = np.ascontiguousarray(data, dtype=np.float32)
-    pred = predict_cuda(input_sample, conv, pool, full)
+conv_out, pool_out = launchKernel(X_test, conv.filters)
+for i in range(len(X_test)):
+    flattened_output = pool_out[i].flatten()
+    pred = full.forward(flattened_output)
     one_hot_pred = np.zeros_like(pred)
     one_hot_pred[np.argmax(pred)] = 1
     predictions.append(one_hot_pred.flatten())
 
-predictions = np.array(predictions)
-print("accuracy score : ",accuracy_score(predictions, y_test))
+# Convert one-hot encoded predictions to class labels
+predicted_labels = np.argmax(predictions, axis=1)
+true_labels = np.argmax(y_test, axis=1)
+print("Time taken for testing : ",time.time()-st , " seconds")
+# Calculate accuracy using sklearn's accuracy_score
+accuracy = accuracy_score(true_labels, predicted_labels)
+print("Accuracy :", accuracy)
