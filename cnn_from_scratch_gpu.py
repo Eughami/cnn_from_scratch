@@ -3,7 +3,7 @@ os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 import sys
 import numpy as np
 import keras
-from scipy.signal import convolve2d
+# from scipy.signal import convolve2d
 from keras.utils import to_categorical
 from sklearn.metrics import accuracy_score
 import time 
