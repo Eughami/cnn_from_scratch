@@ -11,58 +11,12 @@ from numba import cuda
 import numpy as np
 np.set_printoptions(precision=4, suppress=True, linewidth=np.inf,threshold=np.inf)
 
-def manual_convolution(input_array, kernel, mode='valid'):
-    input_shape = input_array.shape
-    kernel_shape = kernel.shape
-    
-    if mode == 'valid':
-        output_shape = (input_shape[0] - kernel_shape[0] + 1, input_shape[1] - kernel_shape[1] + 1)
-    elif mode == 'same':
-        output_shape = input_shape
-    elif mode == 'full':
-        output_shape = (input_shape[0] + kernel_shape[0] - 1, input_shape[1] + kernel_shape[1] - 1)
-    else:
-        raise ValueError("Invalid mode. Please use 'valid', 'same', or 'full'.")
-
-    output_array = np.zeros(output_shape)
-
-    # Pad the input array based on the mode
-    if mode == 'valid':
-        padded_input = input_array
-    elif mode == 'same':
-        pad_height = kernel_shape[0] // 2
-        pad_width = kernel_shape[1] // 2
-        padded_input = np.pad(input_array, ((pad_height, pad_height), (pad_width, pad_width)), mode='constant')
-    elif mode == 'full':
-        padded_input = np.pad(input_array, ((kernel_shape[0] - 1, kernel_shape[0] - 1),
-                                            (kernel_shape[1] - 1, kernel_shape[1] - 1)),
-                              mode='constant')
-    else:
-        raise ValueError("Invalid mode. Please use 'valid', 'same', or 'full'.")
-    
-    # Perform the convolution
-    for i in range(output_shape[0]):
-        for j in range(output_shape[1]):
-            output_array[i, j] = np.sum(np.multiply(padded_input[i:i+kernel_shape[0], j:j+kernel_shape[1]], kernel))
-            # total = 0
-            # for k in range(kernel_shape[0]):
-            #     for l in range(kernel_shape[1]):
-            #         total += padded_input[i + k, j + l] * kernel[k, l]
-
-            # output_array[i, j] = total
-
-    return output_array
-
-
 # Manual convolution using CUDA with @cuda.jit
 @cuda.jit
-def manual_convolution_3d_cuda(larger_arrays, smaller_arrays, output_arrays):
-    # larger and small arrays should have the same depth
-    batch_size, larger_size_depth, larger_size_height, larger_size_width = larger_arrays.shape
-    channels, smaller_size_depth, smaller_size_height, smaller_size_width = smaller_arrays.shape
+def manual_convolution_3d_cuda(inputs, filters, output_arrays):
+    batch_size, _, output_height, output_width = output_arrays.shape
+    channels, smaller_size_depth, smaller_size_height, smaller_size_width = filters.shape
 
-    output_height = larger_size_height - smaller_size_height + 1
-    output_width = larger_size_width - smaller_size_width + 1
     x, y, z = cuda.grid(3)
 
     if x < batch_size and y < output_height and z < output_width:
@@ -71,7 +25,7 @@ def manual_convolution_3d_cuda(larger_arrays, smaller_arrays, output_arrays):
             for l in range(smaller_size_depth):
                 for j in range(smaller_size_height):
                     for i in range(smaller_size_width):
-                        value += larger_arrays[x, l, y + i, z + j] * smaller_arrays[k, l, i, j]
+                        value += inputs[x, l, y + i, z + j] * filters[k, l, i, j]
             output_arrays[x, k, y, z] = value
 
 @cuda.jit
@@ -86,7 +40,45 @@ def manual_maxpooling_cuda(input_arrays, output_arrays, window_size, stride):
                 for j in range(window_size):
                     value = max(value, input_arrays[x // channels, k, (stride*y + i), (stride*z + j)])
             output_arrays[x // channels, k, y, z] = value
+            
+@cuda.jit
+def manual_maxpooling_back_cuda(conv_input, dL_input, output_arrays, pool_size):
+    total_size, channels, height, width = conv_input.shape
+    
+    x = cuda.grid(1)
+    if x < total_size:
+        for c in range(channels):
+            for i in range(height // pool_size):
+                for j in range(width // pool_size):
+                    start_i = i * pool_size
+                    start_j = j * pool_size
+                    end_i = start_i + pool_size
+                    end_j = start_j + pool_size
 
+                    local_max = conv_input[x, c, start_i, start_j]
+                    for m in range(start_i, end_i):
+                        for n in range(start_j, end_j):
+                            local_max = max(local_max, conv_input[x, c, m, n])
+
+                    for m in range(start_i, end_i):
+                        for n in range(start_j, end_j):
+                            mask = (conv_input[x, c, m, n] == local_max)
+                            output_arrays[x, c, m, n] = dL_input[x, c, i, j] * mask
+    
+@cuda.jit
+def manual_convolution_3d_back_cuda(inputs, gradients, output_arrays):
+    batch_size, _, output_height, output_width = output_arrays.shape
+    _, smaller_size_depth, smaller_size_height, smaller_size_width = gradients.shape
+
+    x, y, z = cuda.grid(3)
+
+    if x < batch_size and y < output_height and z < output_width:
+        for l in range(smaller_size_depth):
+            value = 0.0
+            for j in range(smaller_size_height):
+                for i in range(smaller_size_width):
+                    value += inputs[x, l, y + i, z + j] * gradients[x, l, i, j]
+            output_arrays[x, l, y, z] = value
 class Convolution:
     
     def __init__(self, input_shape, filter_size, num_filters):
@@ -103,55 +95,9 @@ class Convolution:
         self.biases = np.random.randn(*self.output_shape)
         # self.biases = np.load("conv_biases.npy")
     
-    def backward(self, input, dL_dout, lr):
-        dL_dinput = np.zeros_like(input)
-        dL_dfilters = np.zeros_like(self.filters)
-        
-        for i in range(self.num_filters):
-                # Calculating the gradient of loss with respect to kernels
-                dL_dfilters[i] = manual_convolution(input, dL_dout[i],mode="valid")
+    def update_filters(self, new_val):
+        self.filters = new_val
 
-                # Calculating the gradient of loss with respect to inputs
-                dL_dinput += manual_convolution(dL_dout[i],self.filters[i], mode="full")
-
-        # Updating the parameters with learning rate
-        self.filters -= lr * dL_dfilters
-        self.biases -= lr * dL_dout
-
-        # returning the gradient of inputs
-        return dL_dinput
-    
-class MaxPool:
-
-    def __init__(self, pool_size):
-        self.pool_size = pool_size
-
-    def backward(self, input_data, dL_dout, lr):
-        self.num_channels, self.input_height, self.input_width = input_data.shape
-        self.output_height = self.input_height // self.pool_size
-        self.output_width = self.input_width // self.pool_size
-
-        # Determining the output shape
-        self.output = np.zeros((self.num_channels, self.output_height, self.output_width))
-
-        dL_dinput = np.zeros_like(input_data)
-
-        for c in range(self.num_channels):
-            for i in range(self.output_height):
-                for j in range(self.output_width):
-                    start_i = i * self.pool_size
-                    start_j = j * self.pool_size
-
-                    end_i = start_i + self.pool_size
-                    end_j = start_j + self.pool_size
-                    patch = input_data[c, start_i:end_i, start_j:end_j]
-
-                    mask = patch == np.max(patch)
-
-                    dL_dinput[c,start_i:end_i, start_j:end_j] = dL_dout[c, i, j] * mask
-
-        return dL_dinput
-    
 class Fully_Connected:
 
     def __init__(self, input_size, output_size):
@@ -239,7 +185,7 @@ def create_batches(data, labels, batch_size):
 
     return zip(data_batches, label_batches), num_batches
 
-def launchKernel(input,filter):
+def cnn_kernel(input,filter):
     # Input/filter  should be in the format (N, C, H, W)
     # Process each array within the main array
     processed_input_array = [array[np.newaxis, :, :] if len(array.shape) == 2 else array for array in input]
@@ -267,29 +213,101 @@ def launchKernel(input,filter):
     # Create output arrays on GPU
     output_arrays_gpu = cuda.device_array((num_larger_arrays, num_smaller_arrays, output_y, output_x))
     # Perform convolution on GPU for each combination of arrays
+    # Create events for measuring time
+    start_kernel = cuda.event()
+    end_kernel = cuda.event()
+    start_kernel.record()
     manual_convolution_3d_cuda[blockspergrid, threadsperblock](larger_arrays_gpu, smaller_arrays_gpu, output_arrays_gpu)
+    # manual_convolution_3d_cuda[blockspergrid, threadsperblock](larger_arrays_gpu, smaller_arrays_gpu, output_arrays_gpu)
 
     # Transfer results from GPU memory to CPU for printing
     results_gpu = output_arrays_gpu.copy_to_host()
+    end_kernel.record()
+    end_kernel.synchronize()  # Wait for completion of kernel execution
+    kernel_time = cuda.event_elapsed_time(start_kernel, end_kernel)
+    # print(f"Conv Kernel execution time: {kernel_time} ms")
     # Applying Relu Activtion function
     results_gpu = np.maximum(results_gpu, 0)
-    conv_out = results_gpu
+    return results_gpu
 
-    # Maxpooling
-    window_size = 2
-    stride = 2
-    output_y = output_y//window_size
-    output_x = output_x//window_size
-    output_arrays_gpu = cuda.device_array((num_larger_arrays, num_smaller_arrays, output_y, output_x))
-    blockspergrid_y = blockspergrid_y//window_size
-    blockspergrid_z = blockspergrid_z//window_size
-    blockspergrid = (blockspergrid_x, blockspergrid_y, blockspergrid_z)
+def pool_kernel(input,window_size, stride):
+    # Input  should be in the format (N, C, H, W)
+    processed_input_array = [array[np.newaxis, :, :] if len(array.shape) == 2 else array for array in input]
+    processed_input_array = np.array(processed_input_array)
     
-    results_gpu = cuda.to_device(results_gpu)
-    manual_maxpooling_cuda[blockspergrid, threadsperblock](results_gpu, output_arrays_gpu, window_size, stride)
-    pool_out = output_arrays_gpu.copy_to_host()
+    num_larger_arrays, channels, input_height, input_width = processed_input_array.shape
+    
+    output_y = input_height//window_size
+    output_x = input_width//window_size
 
-    return conv_out, pool_out
+    threadsperblock = (8, 8, 8)
+    blockspergrid_x = (num_larger_arrays + threadsperblock[0] - 1) // threadsperblock[0]
+    blockspergrid_y = (output_y + threadsperblock[1] - 1) // threadsperblock[1]
+    blockspergrid_z = (output_x + threadsperblock[2] - 1) // threadsperblock[2]
+    blockspergrid = (blockspergrid_x, blockspergrid_y, blockspergrid_z)
+
+    larger_arrays_gpu = cuda.to_device(processed_input_array)    
+    output_arrays_gpu = cuda.device_array((num_larger_arrays, channels, output_y, output_x))
+
+    # Create events for measuring time
+    start_kernel = cuda.event()
+    end_kernel = cuda.event()
+    start_kernel.record()
+    # results_gpu = cuda.to_device(results_gpu)
+    manual_maxpooling_cuda[blockspergrid, threadsperblock](larger_arrays_gpu, output_arrays_gpu, window_size, stride)
+    # manual_maxpooling_cuda[blockspergrid, threadsperblock](results_gpu, output_arrays_gpu, window_size, stride)
+    results_gpu = output_arrays_gpu.copy_to_host()
+    end_kernel.record()
+    end_kernel.synchronize()  # Wait for completion of kernel execution
+    kernel_time = cuda.event_elapsed_time(start_kernel, end_kernel)
+    # print(f"Pool Kernel execution time: {kernel_time} ms")
+    
+    return results_gpu
+
+def pool_back_kernel(conv_arr, dL_arr, pool_size):
+    threadsperblock = 32
+    blockspergrid = (conv_arr.shape[0] + threadsperblock - 1) // threadsperblock
+    
+    conv_arr_gpu = cuda.to_device(conv_arr)
+    dl_arr_gpu = cuda.to_device(dL_arr)
+    output_arrays_gpu = cuda.device_array_like(conv_arr)
+
+    manual_maxpooling_back_cuda[blockspergrid, threadsperblock](conv_arr_gpu, dl_arr_gpu, output_arrays_gpu, pool_size)
+
+    results_gpu = output_arrays_gpu.copy_to_host()
+    return results_gpu
+    
+def cnn_back_kernel(inputs,gradients):
+    # Input/filter  should be in the format (N, C, H, W)
+    # Process each array within the main array
+    processed_input_array = [array[np.newaxis, :, :] if len(array.shape) == 2 else array for array in inputs]
+    processed_gradients_array = [array[np.newaxis, :, :] if len(array.shape) == 2 else array for array in gradients]
+    # Convert to numpy arrays
+    processed_input_array = np.array(processed_input_array)
+    processed_gradients_array = np.array(processed_gradients_array)
+
+    num_larger_arrays, _, input_height, input_width= processed_input_array.shape
+    _, channels, gradients_height, gradients_width = processed_gradients_array.shape
+
+    output_y =input_height - gradients_height + 1
+    output_x = input_width - gradients_width + 1
+    
+    threadsperblock = (8, 8, 8)
+    blockspergrid_x = (num_larger_arrays + threadsperblock[0] - 1) // threadsperblock[0]
+    blockspergrid_y = (output_y + threadsperblock[1] - 1) // threadsperblock[1]
+    blockspergrid_z = (output_x + threadsperblock[2] - 1) // threadsperblock[2]
+    blockspergrid = (blockspergrid_x, blockspergrid_y, blockspergrid_z)
+
+    # Transfer arrays to GPU memory
+    larger_arrays_gpu = cuda.to_device(processed_input_array)
+    smaller_arrays_gpu = cuda.to_device(processed_gradients_array)
+
+    # Create output arrays on GPU
+    output_arrays_gpu = cuda.device_array((num_larger_arrays, channels, output_y, output_x))
+    # Perform convolution on GPU for each combination of arrays
+    manual_convolution_3d_back_cuda[blockspergrid, threadsperblock](larger_arrays_gpu, smaller_arrays_gpu, output_arrays_gpu)
+    results_gpu = output_arrays_gpu.copy_to_host()
+    return results_gpu
 
 # Load the Fashion MNIST dataset
 (train_images, train_labels), (test_images, test_labels) = keras.datasets.fashion_mnist.load_data()
@@ -303,12 +321,12 @@ y_test = test_labels
 y_train = to_categorical(y_train)
 y_test = to_categorical(y_test)
 
-epochs=1
+epochs=5
 lr=0.01
-batch_size=128
+batch_size=64
+pool_size=2
 
 conv = Convolution(X_train[0].shape, 3, 1)
-pool = MaxPool(2)
 full = Fully_Connected(169, 10)
 
 st = time.time()
@@ -319,16 +337,18 @@ def train_network():
         t = time.time()
         total_loss = 0.0
         correct_predictions = 0
-        print("filters\n",conv.filters)
+        # print("filters\n",conv.filters)
 
         # Create batches
         batches, num_batches = create_batches(X_train, y_train, batch_size)
 
         for batch_idx, (X_batch, y_batch) in enumerate(batches):
-
-            full_conv_output, full_pool_out = launchKernel(X_batch, conv.filters)
+            s= time.time()
+            full_conv_output = cnn_kernel(X_batch, conv.filters)
+            full_pool_out = pool_kernel(full_conv_output, pool_size, pool_size)
+            # print("Time taken for batch : ",time.time()-s , " seconds")
             num_images = full_conv_output.shape[0]
-
+            all_full_back = np.empty_like(full_pool_out)
             for i in range(num_images):
                 full_out = full.forward(full_pool_out[i])
                 loss = cross_entropy_loss(full_out.flatten(), y_batch[i])
@@ -347,49 +367,20 @@ def train_network():
 
                 # Backward pass
                 gradient = cross_entropy_loss_gradient(y_batch[i], full_out.flatten()).reshape((-1, 1))
-                full_back = full.backward(gradient, lr)
-                pool_back = pool.backward(full_conv_output[i], full_back, lr)
-                conv_back = conv.backward(X_batch[i], pool_back, lr)
+                # full_back = full.backward(gradient, lr)
+                all_full_back[i] = full.backward(gradient, lr)
+            
+            back_pool_out = pool_back_kernel(full_conv_output,all_full_back,pool_size)
+            back_conv_out = cnn_back_kernel(X_batch, back_pool_out)
+            dL_filters = np.mean(back_conv_out, axis=0)
+            f=conv.filters
+            f -= lr * dL_filters
+            conv.update_filters(f)
             
         average_loss = total_loss / num_samples
         accuracy = correct_predictions / num_samples * 100.0
         print(f"Epoch {epoch + 1}/{epochs} - Time: {time.time() - t:.2f} seconds - Loss: {average_loss:.4f} - Accuracy: {accuracy:.2f}%")
 
-# def train_network():
-#     for epoch in range(epochs):
-#         t = time.time()
-#         total_loss = 0.0
-#         correct_predictions = 0
-#         print("filters\n",conv.filters)
-#         # Forward pass
-#         full_conv_output, full_pool_out = launchKernel(X_train,conv.filters)
-#         num_images = full_conv_output.shape[0]
-#         for i in range(num_images):
-#             full_out = full.forward(full_pool_out[i])
-#             loss = cross_entropy_loss(full_out.flatten(), y_train[i])
-#             total_loss += loss
-
-#             # Converting to One-Hot encoding
-#             one_hot_pred = np.zeros_like(full_out)
-#             one_hot_pred[np.argmax(full_out)] = 1
-#             one_hot_pred = one_hot_pred.flatten()
-
-#             num_pred = np.argmax(one_hot_pred)
-#             num_y = np.argmax(y_train[i])
-
-#             if num_pred == num_y:
-#                 correct_predictions += 1
-#             # Backward pass
-#             gradient = cross_entropy_loss_gradient(y_train[i], full_out.flatten()).reshape((-1, 1))
-#             full_back = full.backward(gradient, lr)
-#             pool_back = pool.backward(full_conv_output[i],full_back, lr)
-#             conv_back = conv.backward(X_train[i],pool_back, lr)
-
-#         average_loss = total_loss / num_images
-#         print("total_loss",total_loss)
-#         print("correct_predictions",correct_predictions)
-#         accuracy = correct_predictions / num_images * 100.0
-#         print(f"Epoch {epoch + 1}/{epochs} - Time: {time.time() - t:.2f} seconds - Loss: {average_loss:.4f} - Accuracy: {accuracy:.2f}%")
 
 train_network()
 
@@ -401,7 +392,8 @@ predictions = []
 # np.save("weights.npy",full.weights)
 # np.save("biases.npy",full.biases)
 
-conv_out, pool_out = launchKernel(X_test, conv.filters)
+conv_out = cnn_kernel(X_test, conv.filters) 
+pool_out = pool_kernel(conv_out, 2, 2)
 for i in range(len(X_test)):
     flattened_output = pool_out[i].flatten()
     pred = full.forward(flattened_output)

@@ -39,13 +39,13 @@ def manual_convolution(input_array, kernel, mode='valid'):
     # Perform the convolution
     for i in range(output_shape[0]):
         for j in range(output_shape[1]):
-            output_array[i, j] = np.sum(np.multiply(padded_input[i:i+kernel_shape[0], j:j+kernel_shape[1]], kernel))
-            # total = 0
-            # for k in range(kernel_shape[0]):
-            #     for l in range(kernel_shape[1]):
-            #         total += padded_input[i + k, j + l] * kernel[k, l]
+            # output_array[i, j] = np.sum(np.multiply(padded_input[i:i+kernel_shape[0], j:j+kernel_shape[1]], kernel))
+            total = 0
+            for k in range(kernel_shape[0]):
+                for l in range(kernel_shape[1]):
+                    total += padded_input[i + k, j + l] * kernel[k, l]
 
-            # output_array[i, j] = total
+            output_array[i, j] = total
 
     return output_array
 
