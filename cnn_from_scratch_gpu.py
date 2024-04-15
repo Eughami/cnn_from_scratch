@@ -378,18 +378,6 @@ print("Time taken for training : ",time.time()-st , " seconds")
 # Plotting the data
 print("epoches",tt)
 print("accuracy",at)
-plt.plot(tt, at)
-
-# Adding labels and title
-plt.xlabel('Time (s)')
-plt.ylabel('Accuracy (%)')
-plt.title('Sample 2D Graph')
-
-# Save the plot as an image (PNG format by default) with number of filter as parameter
-
-plt.savefig('mnist_gpu_8.png')
-
-# close the graph
 plt.close()
 
 st = time.time()
