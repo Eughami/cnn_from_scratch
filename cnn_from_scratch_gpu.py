@@ -2,7 +2,7 @@ import os
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 os.environ["OMP_NUM_THREADS"] = "1"  # Limit numpy to use only one CPU core
 import tensorflow as tf
-tf.random.set_seed(42)
+# tf.random.set_seed(42)
 import sys
 import numpy as np
 # from scipy.signal import convolve2d
@@ -14,7 +14,8 @@ import time
 from numba import cuda
 import numpy as np
 # Set a seed for reproducibility
-np.random.seed(42)
+# np.random.seed(42)
+import matplotlib.pyplot as plt
 
 np.set_printoptions(precision=4, suppress=True, linewidth=np.inf,threshold=np.inf)
 
@@ -97,8 +98,8 @@ class Convolution:
         self.filter_shape = (num_filters, filter_size, filter_size) # (3,3)
         self.output_shape = (num_filters, input_height - filter_size + 1, input_width - filter_size + 1)
         
-        # self.filters = np.random.randn(*self.filter_shape)
-        self.filters = np.load("single_filters.npy")
+        self.filters = np.random.randn(*self.filter_shape)
+        # self.filters = np.load("single_filters.npy")
         # self.biases = np.random.randn(*self.output_shape)
     
     def update_filters(self, new_val):
@@ -110,10 +111,10 @@ class Fully_Connected:
         self.input_size = input_size # Size of the inputs coming
         self.output_size = output_size # Size of the output producing
 
-        # self.weights = np.random.randn(output_size, self.input_size)
-        self.weights = np.load("single_weights.npy")
-        # self.biases = np.random.rand(output_size, 1)
-        self.biases = np.load("single_biases.npy")
+        self.weights = np.random.randn(output_size, self.input_size)
+        # self.weights = np.load("single_weights.npy")
+        self.biases = np.random.rand(output_size, 1)
+        # self.biases = np.load("single_biases.npy")
 
     
     def softmax(self, z):
@@ -296,7 +297,7 @@ def cnn_back_kernel(inputs,gradients):
     return results_gpu
 
 # Load the MNIST dataset
-(train_images, train_labels), (test_images, test_labels) = datasets.fashion_mnist.load_data()
+(train_images, train_labels), (test_images, test_labels) = datasets.mnist.load_data()
 
 X_train = train_images / 255.0
 y_train = train_labels
@@ -309,15 +310,17 @@ y_test = to_categorical(y_test)
 
 epochs=20
 lr=0.01
-batch_size=128
+batch_size=16
 pool_size=2
 
 
 conv = Convolution(X_train[0].shape, 3, 8)
-full = Fully_Connected(1352, 10)
+full = Fully_Connected(169 * 8, 10)
 # full = Fully_Connected(169, 10)
 
 st = time.time()
+at = []
+tt = []
 def train_network():
     num_samples = len(X_train)
     
@@ -364,12 +367,31 @@ def train_network():
         accuracy = correct_predictions / num_samples * 100.0
         # print("correct_predictions",correct_predictions)
         # print("total_loss",total_loss)
+        at.append(accuracy)
+        tt.append(epoch+1)
         print(f"Epoch {epoch + 1}/{epochs} - Time: {time.time() - t:.2f} seconds - Loss: {average_loss:.4f} - Accuracy: {accuracy:.2f}%")
 
 
 train_network()
 
 print("Time taken for training : ",time.time()-st , " seconds")
+# Plotting the data
+print("epoches",tt)
+print("accuracy",at)
+plt.plot(tt, at)
+
+# Adding labels and title
+plt.xlabel('Time (s)')
+plt.ylabel('Accuracy (%)')
+plt.title('Sample 2D Graph')
+
+# Save the plot as an image (PNG format by default) with number of filter as parameter
+
+plt.savefig('mnist_gpu_8.png')
+
+# close the graph
+plt.close()
+
 st = time.time()
 predictions = []
 # np.save("conv_filters.npy",conv.filters)

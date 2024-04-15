@@ -1,3 +1,6 @@
+import os 
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
+os.environ["OMP_NUM_THREADS"] = "1"  # Limit numpy to use only one CPU core
 import tensorflow as tf
 from tensorflow.keras import layers, models
 from keras.utils import to_categorical
@@ -17,7 +20,7 @@ y_test = to_categorical(y_test)
 model = models.Sequential()
 
 # Convolutional layer
-model.add(layers.Conv2D(1, (3, 3), activation='relu', input_shape=(28, 28, 1)))
+model.add(layers.Conv2D(8, (3, 3), activation='relu', input_shape=(28, 28, 1)))
 
 # Max pooling layer
 model.add(layers.MaxPooling2D((2, 2)))
@@ -31,8 +34,9 @@ model.add(layers.Flatten())
 # Output layer
 model.add(layers.Dense(10, activation='softmax'))
 
+optimizer=tf.keras.optimizers.Adam(learning_rate=0.01)
 # Compile the model
-model.compile(optimizer='adam',
+model.compile(optimizer=optimizer,
               loss='categorical_crossentropy',
               metrics=['accuracy'])
 
@@ -40,7 +44,7 @@ model.compile(optimizer='adam',
 start_time = time.time()
 
 # Train the model
-model.fit(x_train, y_train, epochs=5, batch_size=128,verbose=0)
+model.fit(x_train, y_train, epochs=20, batch_size=16)
 
 # Calculate the training time
 training_time = time.time() - start_time

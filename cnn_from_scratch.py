@@ -2,7 +2,7 @@ import os
 os.environ["OMP_NUM_THREADS"] = "1"  # Limit numpy to use only one CPU core
 import numpy as np
 import tensorflow as tf
-tf.random.set_seed(42)
+# tf.random.set_seed(42)
 from keras import datasets
 from scipy.signal import convolve2d
 from keras.utils import to_categorical
@@ -11,8 +11,8 @@ import time
 import numpy as np
 import sys
 # Set a seed for reproducibility
-np.random.seed(42)
-np.set_printoptions(precision=4, suppress=True, linewidth=np.inf,threshold=np.inf)
+# np.random.seed(42)
+# np.set_printoptions(precision=4, suppress=True, linewidth=np.inf,threshold=np.inf)
 
 def manual_convolution(input_array, kernel, mode='valid'):
     input_shape = input_array.shape
@@ -269,7 +269,7 @@ conv = Convolution(X_train[0].shape, filter_size, filter_num)
 pool = MaxPool(pool_size)
 full = Fully_Connected(1352, 10)
 
-def train_network(X, y, conv, pool, full, lr=0.01, epochs=20, batch_size=16):
+def train_network(X, y, conv, pool, full, lr=0.01, epochs=20, batch_size=128):
     for epoch in range(epochs):
         t = time.time()
         total_loss = 0.0
