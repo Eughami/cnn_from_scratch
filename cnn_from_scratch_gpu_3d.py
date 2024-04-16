@@ -246,15 +246,14 @@ def train_network():
         batches, num_batches = create_batches(X_train, y_train, batch_size)
         for batch_idx, (X_batch, y_batch) in enumerate(batches):
             full_conv_output = cnn_kernel(X_batch, conv1.filters)
+            # print("full_conv_output\n",full_conv_output.shape)
             full_pool_out = pool_kernel(full_conv_output, pool_size, pool_size)
+            # print("full_pool_out\n",full_pool_out.shape)
             full_conv_output2= cnn_kernel(full_pool_out, conv2.filters)
+            # print("full_conv_output2\n",full_conv_output2.shape)
             full_pool_out2 = pool_kernel(full_conv_output2, pool_size, pool_size)
-            print(len(X_batch))
-            print(full_conv_output2.shape)
-            print(num_batches)
-            print(batches)
-            sys.exit()
-            num_images = full_conv_output2.shape[0]
+            # print("full_pool_out2\n",full_pool_out2.shape)
+            num_images = full_conv_output.shape[0]
             all_full_back = np.empty_like(full_pool_out2)
             for i in range(num_images):
                 full_out = full.forward(full_pool_out2[i])
@@ -277,21 +276,30 @@ def train_network():
                 all_full_back[i] = full.backward(gradient, lr)
 
             back_pool_out = pool_back_kernel(full_conv_output2,all_full_back,pool_size)
+            # print("\n\n\nback_pool_out",back_pool_out.shape)
             back_conv_filters_out = cnn_back_kernel(full_pool_out, back_pool_out)
+            # print("\n\n\nback_conv_filters_out",back_conv_filters_out.shape)
             conv2.filters -= lr * np.prod(back_conv_filters_out, axis=0)
             conv2.update_filters(conv2.filters)
+            # print("\n\n\nconv2.filters",conv2.filters.shape)
             back_conv_input_out = cnn_back_kernel(back_pool_out, conv2.filters, mode='full')
+            # print("\n\n\nback_conv_input_out",back_conv_input_out.shape)
 
             back_pool_out2 = pool_back_kernel(full_conv_output, back_conv_input_out, pool_size)
+            # print("\n\n\nback_pool_out2",back_pool_out2.shape)
             back_conv_filters_out2 = cnn_back_kernel(X_batch, back_pool_out2)
+            # print("\n\n\nback_conv_filters_out2",back_conv_filters_out2.shape)
             conv1.filters -= lr * np.prod(back_conv_filters_out2, axis=0)
             conv1.update_filters(conv1.filters)
+            # print("\n\n\nconv1.filters",conv1.filters.shape)
             # sys.exit()
 
 
             
         average_loss = total_loss / num_samples
         accuracy = correct_predictions / num_samples * 100.0
+        # print("correct_predictions",correct_predictions)
+        # print("total_loss",total_loss)
         at.append(accuracy)
         tt.append(epoch+1)
         print(f"Epoch {epoch + 1}/{epochs} - Time: {time.time() - t:.2f} seconds - Loss: {average_loss:.4f} - Accuracy: {accuracy:.2f}%")
