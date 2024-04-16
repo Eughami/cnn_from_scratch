@@ -4,3 +4,4 @@ out
 .env
 logs
 *.npy
+__pycache__
