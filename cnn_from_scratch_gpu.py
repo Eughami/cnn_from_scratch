@@ -87,6 +87,34 @@ def manual_convolution_3d_back_cuda(inputs, gradients, output_arrays):
                 for i in range(smaller_size_width):
                     value += inputs[x, l, y + i, z + j] * gradients[x, l, i, j]
             output_arrays[x, l, y, z] = value
+def gaussian_init(shape, mean=0, stddev=0.1):
+    """
+    Perform Gaussian initialization for weights.
+    
+    Arguments:
+    shape -- Shape of the weight tensor
+    mean -- Mean of the Gaussian distribution (default 0)
+    stddev -- Standard deviation of the Gaussian distribution (default 0.1)
+    
+    Returns:
+    weights -- Initialized weights using Gaussian initialization
+    """
+    return np.random.normal(mean, stddev, shape)
+
+def xavier_init(shape):
+    """
+    Perform Xavier initialization for weights.
+    
+    Arguments:
+    shape -- Shape of the weight tensor
+    
+    Returns:
+    weights -- Initialized weights using Xavier initialization
+    """
+    fan_in = np.prod(shape[1:])  # Compute the number of input units
+    variance = 2.0 / (fan_in + shape[0])  # Xavier scaling factor
+    stddev = np.sqrt(variance)
+    return np.random.randn(*shape) * stddev
 class Convolution:
     
     def __init__(self, input_shape, filter_size, num_filters):
@@ -98,7 +126,9 @@ class Convolution:
         self.filter_shape = (num_filters, filter_size, filter_size) # (3,3)
         self.output_shape = (num_filters, input_height - filter_size + 1, input_width - filter_size + 1)
         
-        self.filters = np.random.randn(*self.filter_shape)
+        # self.filters = np.random.randn(*self.filter_shape)
+        # self.filters = gaussian_init((num_filters, filter_size, filter_size))
+        self.filters = xavier_init((num_filters, filter_size, filter_size))
         # self.filters = np.load("single_filters.npy")
         # self.biases = np.random.randn(*self.output_shape)
     
@@ -310,13 +340,15 @@ y_test = to_categorical(y_test)
 
 epochs=20
 lr=0.01
-batch_size=16
+batch_size=64
 pool_size=2
 
 
-conv = Convolution(X_train[0].shape, 3, 8)
-full = Fully_Connected(169 * 8, 10)
-# full = Fully_Connected(169, 10)
+f_size = 3
+f_num = 64
+conv = Convolution(X_train[0].shape, f_size, f_num)
+out_size = (X_train[0].shape[0] - f_size + 1) // pool_size
+full = Fully_Connected(out_size * out_size * f_num, 10)
 
 st = time.time()
 at = []
@@ -358,7 +390,6 @@ def train_network():
 
             back_pool_out = pool_back_kernel(full_conv_output,all_full_back,pool_size)
             back_conv_out = cnn_back_kernel(X_batch, back_pool_out)
-            
             dL_filters = np.prod(back_conv_out, axis=0)
             conv.filters -= lr * dL_filters 
             conv.update_filters(conv.filters)

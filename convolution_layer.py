@@ -31,9 +31,6 @@ class Convolution:
         # Create a random dL_dout array to accommodate output gradients
         dL_dinput = np.zeros_like(input)
         dL_dfilters = np.zeros_like(self.filters)
-        print(dL_dout.shape)
-        print(self.filters.shape)
-        sys.exit()
         
         for i in range(self.num_filters):
                 # Calculating the gradient of loss with respect to kernels

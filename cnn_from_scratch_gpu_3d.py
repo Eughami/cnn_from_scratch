@@ -1,8 +1,6 @@
 import os
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 os.environ["OMP_NUM_THREADS"] = "1"  # Limit numpy to use only one CPU core
-from convolution_layer import Convolution
-from fully_connected import Fully_Connected
 from utils import create_batches, cross_entropy_loss, cross_entropy_loss_gradient 
 import tensorflow as tf
 # tf.random.set_seed(42)
@@ -92,7 +90,117 @@ def manual_convolution_3d_back_cuda(inputs, gradients, output_arrays):
                     value += inputs[x, l, y + i, z + j] * gradients[x, l, i, j]
             output_arrays[x, l, y, z] = value
             
-def cnn_kernel(input,filter):
+def gaussian_init(shape, mean=0, stddev=0.1):
+    """
+    Perform Gaussian initialization for weights.
+    
+    Arguments:
+    shape -- Shape of the weight tensor
+    mean -- Mean of the Gaussian distribution (default 0)
+    stddev -- Standard deviation of the Gaussian distribution (default 0.1)
+    
+    Returns:
+    weights -- Initialized weights using Gaussian initialization
+    """
+    return np.random.normal(mean, stddev, shape)
+
+def xavier_init(shape):
+    """
+    Perform Xavier initialization for weights.
+    
+    Arguments:
+    shape -- Shape of the weight tensor
+    
+    Returns:
+    weights -- Initialized weights using Xavier initialization
+    """
+    fan_in = np.prod(shape[1:])  # Compute the number of input units
+    variance = 2.0 / (fan_in + shape[0])  # Xavier scaling factor
+    stddev = np.sqrt(variance)
+    return np.random.randn(*shape) * stddev
+class Convolution:
+    
+    def __init__(self, input_shape, filter_size, num_filters):
+        input_height, input_width = input_shape
+        self.num_filters = num_filters
+        self.input_shape = input_shape
+        
+        # Size of outputs and filters
+        self.filter_shape = (num_filters, filter_size, filter_size) # (3,3)
+        self.output_shape = (num_filters, input_height - filter_size + 1, input_width - filter_size + 1)
+        
+        # self.filters = np.random.randn(*self.filter_shape)
+        # self.filters = gaussian_init((num_filters, filter_size, filter_size))
+        self.filters = xavier_init((num_filters, filter_size, filter_size))
+        # self.filters = np.load("single_filters.npy")
+        # self.biases = np.random.randn(*self.output_shape)
+    
+    def update_filters(self, new_val):
+        self.filters = new_val
+
+class Fully_Connected:
+
+    def __init__(self, input_size, output_size):
+        self.input_size = input_size # Size of the inputs coming
+        self.output_size = output_size # Size of the output producing
+
+        self.weights = np.random.randn(output_size, self.input_size)
+        # self.weights = np.load("single_weights.npy")
+        self.biases = np.random.rand(output_size, 1)
+        # self.biases = np.load("single_biases.npy")
+
+    
+    def softmax(self, z):
+        # Shift the input values to avoid numerical instability
+        shifted_z = z - np.max(z)
+        
+        # Exponentiate the shifted values
+        exp_values = np.exp(shifted_z)
+        
+        # Calculate the sum of exponentiated values for normalization
+        sum_exp_values = np.sum(exp_values, axis=0)
+        
+        # Calculate the softmax probabilities
+        probabilities = exp_values / sum_exp_values
+        
+        return probabilities
+    
+    def softmax_derivative(self, s):
+        diag_softmax = np.diagflat(s)
+        outer_product = np.outer(s, s)
+        return diag_softmax - outer_product
+    
+    def forward(self, input_data):
+        self.input_data = input_data
+        # Flattening the inputs from the previous layer into a vector
+        flattened_input = input_data.flatten().reshape(1, -1)
+        self.z = np.dot(self.weights, flattened_input.T) + self.biases
+
+        # Applying Softmax
+        self.output = self.softmax(self.z)
+        return self.output
+    
+    def backward(self, dL_dout, lr):
+        # Calculate the gradient of the loss with respect to the pre-activation (z)
+        dL_dy = np.dot(self.softmax_derivative(self.output), dL_dout)
+        # Calculate the gradient of the loss with respect to the weights (dw)
+        dL_dw = np.dot(dL_dy, self.input_data.flatten().reshape(1, -1))
+
+        # Calculate the gradient of the loss with respect to the biases (db)
+        dL_db = dL_dy
+
+        # Calculate the gradient of the loss with respect to the input data (dL_dinput)
+        dL_dinput = np.dot(self.weights.T, dL_dy)
+        dL_dinput = dL_dinput.reshape(self.input_data.shape)
+
+        # Update the weights and biases based on the learning rate and gradients
+        self.weights -= lr * dL_dw
+        self.biases -= lr * dL_db
+
+        # Return the gradient of the loss with respect to the input data
+        return dL_dinput
+    
+def cnn_kernel(input,filter, mode='valid'):
     # Input/filter  should be in the format (N, C, H, W)
     # Process each array within the main array
     processed_input_array = [array[np.newaxis, :, :] if len(array.shape) == 2 else array for array in input]
@@ -101,6 +209,8 @@ def cnn_kernel(input,filter):
     processed_input_array = np.array(processed_input_array)
     processed_filter_array = np.array(processed_filter_array)
     
+    if(mode == 'full'):
+        processed_input_array = np.pad(processed_input_array, ((0, 0), (0, 0), (2, 2), (2, 2)), mode='constant')
     num_larger_arrays, _, input_height, input_width= processed_input_array.shape
     num_smaller_arrays, _, filter_height, filter_width = processed_filter_array.shape
 
@@ -215,21 +325,14 @@ y_test = to_categorical(y_test)
 
 epochs=20
 lr=0.01
-batch_size=32
+batch_size=16
 pool_size=2
 
-
-conv1 = Convolution(X_train[0].shape, 5, 2)
-# print("conv1.filters",conv1.output_shape)
-# print("conv1.filters",conv1.filter_shape)
-# print("conv1.filters\n",conv1.filters)
+# filter size 5 bigger filter get more general shape
+conv1 = Convolution(X_train[0].shape, 5, 4)
 h,w= conv1.output_shape[1:]
-conv2 = Convolution((h//pool_size,w//pool_size), 3, 4)
-# print("conv2.filters",conv2.output_shape)
-# print("conv2.filters\n",conv2.filters)
-# sys.exit()
-full = Fully_Connected(25 * 4, 10)
-# full = Fully_Connected(169, 10)
+conv2 = Convolution((h//pool_size,w//pool_size), 3, 8)
+full = Fully_Connected(25 * 8, 10)
 
 st = time.time()
 at = []
@@ -246,16 +349,11 @@ def train_network():
         batches, num_batches = create_batches(X_train, y_train, batch_size)
         for batch_idx, (X_batch, y_batch) in enumerate(batches):
             full_conv_output = cnn_kernel(X_batch, conv1.filters)
-            # print("full_conv_output\n",full_conv_output.shape)
             full_pool_out = pool_kernel(full_conv_output, pool_size, pool_size)
-            # print("full_pool_out\n",full_pool_out.shape)
             full_conv_output2= cnn_kernel(full_pool_out, conv2.filters)
-            # print("full_conv_output2\n",full_conv_output2.shape)
             full_pool_out2 = pool_kernel(full_conv_output2, pool_size, pool_size)
-            # print("full_pool_out2\n",full_pool_out2.shape)
-            num_images = full_conv_output.shape[0]
             all_full_back = np.empty_like(full_pool_out2)
-            for i in range(num_images):
+            for i in range(len(X_batch)):
                 full_out = full.forward(full_pool_out2[i])
                 loss = cross_entropy_loss(full_out.flatten(), y_batch[i])
                 total_loss += loss
@@ -275,31 +373,21 @@ def train_network():
                 gradient = cross_entropy_loss_gradient(y_batch[i], full_out.flatten()).reshape((-1, 1))
                 all_full_back[i] = full.backward(gradient, lr)
 
+            
             back_pool_out = pool_back_kernel(full_conv_output2,all_full_back,pool_size)
-            # print("\n\n\nback_pool_out",back_pool_out.shape)
             back_conv_filters_out = cnn_back_kernel(full_pool_out, back_pool_out)
-            # print("\n\n\nback_conv_filters_out",back_conv_filters_out.shape)
             conv2.filters -= lr * np.prod(back_conv_filters_out, axis=0)
             conv2.update_filters(conv2.filters)
-            # print("\n\n\nconv2.filters",conv2.filters.shape)
             back_conv_input_out = cnn_back_kernel(back_pool_out, conv2.filters, mode='full')
-            # print("\n\n\nback_conv_input_out",back_conv_input_out.shape)
 
             back_pool_out2 = pool_back_kernel(full_conv_output, back_conv_input_out, pool_size)
-            # print("\n\n\nback_pool_out2",back_pool_out2.shape)
             back_conv_filters_out2 = cnn_back_kernel(X_batch, back_pool_out2)
-            # print("\n\n\nback_conv_filters_out2",back_conv_filters_out2.shape)
-            conv1.filters -= lr * np.prod(back_conv_filters_out2, axis=0)
+            conv1.filters -= lr   * np.prod(back_conv_filters_out2, axis=0)
             conv1.update_filters(conv1.filters)
-            # print("\n\n\nconv1.filters",conv1.filters.shape)
-            # sys.exit()
-
 
             
         average_loss = total_loss / num_samples
         accuracy = correct_predictions / num_samples * 100.0
-        # print("correct_predictions",correct_predictions)
-        # print("total_loss",total_loss)
         at.append(accuracy)
         tt.append(epoch+1)
         print(f"Epoch {epoch + 1}/{epochs} - Time: {time.time() - t:.2f} seconds - Loss: {average_loss:.4f} - Accuracy: {accuracy:.2f}%")

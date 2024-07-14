@@ -1,6 +1,6 @@
 import os 
-os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
-os.environ["OMP_NUM_THREADS"] = "1"  # Limit numpy to use only one CPU core
+# os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
+# os.environ["OMP_NUM_THREADS"] = "1"  # Limit numpy to use only one CPU core
 import tensorflow as tf
 from tensorflow.keras import layers, models
 from keras.utils import to_categorical
