@@ -1,0 +1,43 @@
+GPU epoch
+conv time : 3.77, pool time : 2.26, back time: 17.95
+Epoch 1/20 - Time: 28.22 seconds - Loss: 0.5259 - Accuracy: 54.27%
+
+GPU with (sequential conv)
+conv time : 32.28, pool time : 2.47, back time: 21.62
+Epoch 2/20 - Time: 61.11 seconds - Loss: 0.2584 - Accuracy: 75.80%
+
+GPU with (sequential conv + back_conv)
+conv time : 29.60, pool time : 2.50, back time: 71.67
+Epoch 1/20 - Time: 108.01 seconds - Loss: 0.3026 - Accuracy: 62.81%
+
+CPU epoch
+conv time : 729.14, pool time : 184.15, back time: 1022.30
+Epoch 1/20 - Time: 1941.57 seconds - Loss: 0.7473 - Accuracy: 46.72%
+
+CPU
+1941.57 (-6%)
+
+Parallel parts
+CNN
+1941.57 - 729.17 + 3.77 = 1141
+Pool
+1941.57 - 184.15 + 2.26 = 1653
+
+Cnn+back
+1941.57 - 729.17 - 1022 + 3.77 + 17.95 = 198
+
+Pool+back
+1941.57 - 184.15 - 1022 + 2.26 + 17.95 = 710
+
+GPU
+28
+
+These are the results of the simulations you requested in your last email.
+I'm not sure what should be discussed here, or where this will fit inside the paper.
+We already compared different versions
+
+//In the table for different parallel parts put speedup instead of improvement.
+// Add a new parallel details for the convolution where only the inside image is parallel and
+// every image in the batch is sequential
+// update the figure (with explanation), Algorithms, and results
+// send that as a seperate file before starting the thesis.

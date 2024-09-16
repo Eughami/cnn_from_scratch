@@ -340,12 +340,12 @@ y_test = to_categorical(y_test)
 
 epochs=20
 lr=0.01
-batch_size=128
+batch_size=16
 pool_size=2
 
 
-f_size = 5
-f_num = 16
+f_size = 3
+f_num = 8
 conv = Convolution(X_train[0].shape, f_size, f_num)
 out_size = (X_train[0].shape[0] - f_size + 1) // pool_size
 full = Fully_Connected(out_size * out_size * f_num, 10)
@@ -357,9 +357,9 @@ def train_network():
     num_samples = len(X_train)
     
     for epoch in range(epochs):
-        # cTime=0 
-        # pTime =0 
-        # bTime = 0
+        cTime=0 
+        pTime =0 
+        bTime = 0
         t = time.time()
         total_loss = 0.0
         correct_predictions = 0
@@ -367,12 +367,21 @@ def train_network():
         # Create batches
         batches, num_batches = create_batches(X_train, y_train, batch_size)
         for batch_idx, (X_batch, y_batch) in enumerate(batches):
-            # current_time = time.time()
-            full_conv_output = cnn_kernel(X_batch, conv.filters)
-            # cTime += time.time() - current_time
-            # current_time = time.time()
+            current_time = time.time()
+            _, _, o_size=conv.output_shape
+            full_conv_output = np.empty((batch_size,f_num,o_size,o_size)) 
+            # print(X_batch.shape, X_batch[0].shape)
+            # cnn_kernel(X_batch, conv.filters)
+            for i in range(len(X_batch)):
+                array_3d = X_batch[i][np.newaxis, :, :]
+                full_conv_output[i] = cnn_kernel(array_3d,conv.filters)
+
+            # print(full_conv_output.shape)
+            # sys.exit()
+            cTime += time.time() - current_time
+            current_time = time.time()
             full_pool_out = pool_kernel(full_conv_output, pool_size, pool_size)
-            # pTime += time.time() - current_time
+            pTime += time.time() - current_time
             num_images = full_conv_output.shape[0]
             all_full_back = np.empty_like(full_pool_out)
             for i in range(num_images):
@@ -395,10 +404,26 @@ def train_network():
                 gradient = cross_entropy_loss_gradient(y_batch[i], full_out.flatten()).reshape((-1, 1))
                 all_full_back[i] = full.backward(gradient, lr)
 
-            # current_time = time.time()
+            current_time = time.time()
             back_pool_out = pool_back_kernel(full_conv_output,all_full_back,pool_size)
-            back_conv_out = cnn_back_kernel(X_batch, back_pool_out)
-            # bTime += time.time() - current_time
+            # back_conv_out = cnn_back_kernel(X_batch, back_pool_out)
+            back_conv_out = np.empty((batch_size,f_num,f_size,f_size))
+            # print(back_conv_out.shape)
+            # print(X_batch.shape)
+            # print(back_pool_out.shape)
+            # sys.exit(0)
+            for i in range(batch_size):
+                input_3d = X_batch[i][np.newaxis, :, :]
+                back_3d =  back_pool_out[i][np.newaxis, :, :]
+                back_conv_out[i] = cnn_back_kernel(input_3d, back_3d)
+                # dL_filters = np.squeeze(back_conv_out,axis=0)
+                # print(dL_filters.shape)
+                # print(input_3d.shape)
+                # print(back_3d.shape)
+                # sys.exit()
+                # conv.filters -= lr * dL_filters 
+                # conv.update_filters(conv.filters)
+            bTime += time.time() - current_time
             dL_filters = np.prod(back_conv_out, axis=0)
             conv.filters -= lr * dL_filters 
             conv.update_filters(conv.filters)
@@ -409,7 +434,7 @@ def train_network():
         # print("total_loss",total_loss)
         at.append(accuracy)
         tt.append(epoch+1)
-        # print(f" conv time : {cTime:.2f}, pool time : {pTime:.2f}, back time: {bTime:.2f}")
+        print(f" conv time : {cTime:.2f}, pool time : {pTime:.2f}, back time: {bTime:.2f}")
         print(f"Epoch {epoch + 1}/{epochs} - Time: {time.time() - t:.2f} seconds - Loss: {average_loss:.4f} - Accuracy: {accuracy:.2f}%")
 
 
